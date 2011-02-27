@@ -10,6 +10,7 @@
 require 'trollop'
 require 'fastercsv'
 require 'timecode'
+require 'ftools'
 
 ##########################################################
 # PARAMETERS & ERROR CHECKING
@@ -30,7 +31,7 @@ opts = Trollop::options do
 thumbnailer.rb extracts thumbnails from source mp4s based on film ID & timecode
 
 Usage:
-    thumbnailer <file.csv>
+    thumbnailer [file.csv]
 
 thumbnailer expects file.csv to have a header row labeling three columns (in any order):
   Film ID                 = film id
@@ -41,26 +42,42 @@ thumbnailer expects file.csv to have a header row labeling three columns (in any
 
 (Timecodes should be formatted as h:mm:ss or hh:mm:ss)
 EOS
+  opt :csv_file, "CSV file containing film ids and timecodes to extract", :type => String
+  opt :film_id,  "Film ID to extract (if csv not specified)", :type => Integer, :default => 0
+  opt :timecode, "Timecode to extract (if csv not specified)", :type => String
+  opt :titlecard, "Is a single timecode extraction a timecode?", :default => false
+  opt :titlecard_as_default, "Copy titlecard.jpg to 000xid.jpg for default images", :default => true
   opt :n_frames, "Number of frames to extract at each timecode", :default => 1
   opt :offset, "Number of seconds before each timecode to begin extracting", :default => 0.0
   opt :output_path, "Root folder for thumbnail output", :default => "./new_thumbnails"
   opt :dry_run, "Dry run (don't create thumbnails)", :default => false
 end
 
-csv_file = ARGV.shift
-# validate options
-Trollop::die "Input file #{csv_file} does not exist!" unless csv_file && File.exist?(csv_file)
-
+$csv_file = opts[:csv_file]
 $n_frames = opts[:n_frames]
 $offset = Timecode.parse("00:00:%05.2f" % opts[:offset], 24)
 $output_path = opts[:output_path]
 $dry_run = opts[:dry_run]
+$film_id = opts[:film_id]
+$timecode = opts[:timecode]
+$titlecard = opts[:titlecard]
+$titlecard_as_default = opts[:titlecard_as_default]
+
+# validate options
+if $csv_file
+  Trollop::die "Input file #{$csv_file} does not exist!" unless File.exist?($csv_file)
+elsif $film_id > 0
+  Trollop::die "Must specify a timecode to extract." unless $timecode
+else 
+  Trollop::die "Must specify a csv file, or a film id and timecode."
+end
 
 # for a given film id, return the path to the largest associated mp4 file (presumably the highest quality file)
 def largest_film_file(id)
   max_file = ''
   max_size = 0
-  files = Dir.glob(File.join(MOVIE_ROOT, id[0..0], id, "*.mp4")) do |f|
+  id_dir = id / 100
+  files = Dir.glob(File.join(MOVIE_ROOT, id_dir.to_s, id.to_s, "*.mp4")) do |f|
     f_size = File.size(f)
     if f_size > max_size
       max_file = f
@@ -93,11 +110,10 @@ end
 def output_folder(id)
     # create output folders if necessary
     create_dir($output_path) unless File.exist?($output_path)
-    path=File.join($output_path, id)
+    path=File.join($output_path, id.to_s)
     create_dir(path) unless File.exist?(path)
     return path
 end
-
 
 def output_filename(id, timecode, title_card) 
     path=output_folder(id)
@@ -105,48 +121,88 @@ def output_filename(id, timecode, title_card)
     # replace colons with underlines for filenames
     t = timecode.gsub(/:/, "_")
 
+    suffix = ($n_frames == 1) ? ".jpg" : "_%02d.jpg"
+
     if title_card
-	return File.join(path, "#{id}_titlecard_#{t}_%02d.jpg")
+	return File.join(path, "#{id}_titlecard_#{t}#{suffix}")
     else
-	return File.join(path, "#{id}_#{t}_%02d.jpg")
+	return File.join(path, "#{id}_#{t}_#{suffix}")
     end
 end
 
-def extract_thumbnail(source_file, timecode, id, title_card=false)
+def default_filename(id)
+    path=output_folder(id)
+    return File.join(path, "%06d.jpg" % id.to_i)
+end
 
+def extract_thumbnail(source_file, timecode, id, title_card=false, as_default=false)
     # convert string into timecode; return if not valid
     t = parse_timecode(timecode)
     return unless t
+    raise "Source file error!" unless source_file && File.exist?(source_file)
 
     # subtract offset and convert into something ffmpeg will understand
     t = (t - $offset).with_frames_as_fraction
     # save multiple thumbnails before/after timecode 
+
+    file = output_filename(id, t, title_card)
+
     if $dry_run
-      puts("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{output_filename(id, t, title_card)}")
+      puts("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file}")
     else
-      system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{output_filename(id, t, title_card)}")
+      puts "Exracting thumbnail from #{source_file}..."
+      system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file} &>ffmpeg.log")
     end
+
+    if as_default
+      File.copy(file, default_filename(id))
+    end      
 end
 
-begin
+def extract_thumbnails_from_csv(csv_file)
   FasterCSV.foreach(csv_file, :headers => true, :header_converters => :symbol) do |row|
-    id=row[:film_id]
-    unless id.to_i > 0 
+    id=row[:film_id].to_i
+    unless id > 0 
       puts "id #{row[:film_id]} is not valid!"
       next
     end
 
     source_file = largest_film_file(id) 
-    unless source_file
-      puts "could not find movie file for film id #{id}"
+    unless source_file && File.exist?(source_file)
+      puts "could not find movie file #{source_file} for film id #{id}"
       next
     end
 
-    extract_thumbnail(source_file, row[:title_card_timecode], id, true)
+    extract_thumbnail(source_file, row[:title_card_timecode], id, true, $titlecard_as_default)
     extract_thumbnail(source_file, row[:image_1_timecode], id)
     extract_thumbnail(source_file, row[:image_2_timecode], id)
     extract_thumbnail(source_file, row[:image_3_timecode], id)
-
   end
+end
+
+def extract_single_timecode(id, timecode, titlecard)
+  unless id > 0 
+    puts "id #{id} is not valid!"
+    return
+  end
+
+  source_file = largest_film_file(id) 
+  unless source_file
+    puts "could not find movie file #{source_file} for film id #{id}"
+    return
+  end
+  extract_thumbnail(source_file, timecode, id, titlecard, $titlecard_as_default)
+end
+
+
+
+################################################################################
+## MAIN BODY
+################################################################################
+
+if $csv_file
+   extract_thumbnails_from_csv($csv_file)
+else
+   extract_single_timecode($film_id, $timecode, $titlecard)
 end
 
