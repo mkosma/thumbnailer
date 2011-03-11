@@ -148,13 +148,15 @@ def extract_thumbnail(source_file, timecode, offset, id, title_card=false, as_de
     if $dry_run
       puts("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file}")
     else
-      puts "Exracting thumbnail from #{source_file}..."
-      system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file} &> /dev/null")
+      p = fork do
+            puts "Exracting thumbnail from #{source_file}..."
+            system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file} &> /dev/null")
+	    if as_default
+	      File.copy(file, default_filename(id))
+	    end      
+	  end
+      Process.detach(p)
     end
-
-    if as_default
-      File.copy(file, default_filename(id))
-    end      
 end
 
 def extract_thumbnails_from_csv(csv_file)
