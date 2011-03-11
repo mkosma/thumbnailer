@@ -3,7 +3,7 @@
 ##########################################################
 # thumbnailer.rb
 #
-# extract thumbnails from mp4s using csv source data
+# automatically extract thumbnails from mp4s
 #
 ##########################################################
 
@@ -17,8 +17,7 @@ require 'ftools'
 ##########################################################
 
 MOVIE_ROOT='/movies'
-
-# NOTE:  fps doesn't matter, we convert it away, just need an even number...
+FPS=24 # default, doesn't really matter, just used for format conversion seconds->frames
 
 ##########################################################
 # COMMAND LINE PARSING
@@ -46,7 +45,7 @@ EOS
   opt :film_id,  "Film ID to extract (if csv not specified)", :type => Integer, :default => 0
   opt :timecode, "Timecode to extract (if csv not specified)", :type => String
   opt :titlecard, "Is a single timecode extraction a timecode?", :default => false
-  opt :titlecard_as_default, "Copy titlecard.jpg to 000xid.jpg for default images", :default => true
+  opt :image_as_default, "Copy image jpg to 000xid.jpg for default images (csv only)", :default => true
   opt :n_frames, "Number of frames to extract at each timecode", :default => 1
   opt :offset, "Number of seconds before each timecode to begin extracting", :default => 0.0
   opt :output_path, "Root folder for thumbnail output", :default => "./new_thumbnails"
@@ -55,13 +54,13 @@ end
 
 $csv_file = opts[:csv_file]
 $n_frames = opts[:n_frames]
-$offset = Timecode.parse("00:00:%05.2f" % opts[:offset], 24)
+$offset = opts[:offset]
 $output_path = opts[:output_path]
 $dry_run = opts[:dry_run]
 $film_id = opts[:film_id]
 $timecode = opts[:timecode]
 $titlecard = opts[:titlecard]
-$titlecard_as_default = opts[:titlecard_as_default]
+$image_as_default = opts[:image_as_default]
 
 # validate options
 if $csv_file
@@ -87,12 +86,12 @@ def largest_film_file(id)
   max_file
 end
 
-# parse a potentially flaky h:mm:ss timecode into a Timecode object (assuming 24 fps)
+# parse a potentially flaky h:mm:ss timecode into a Timecode object
 def parse_timecode(time_string)
   return unless time_string.is_a?(String)
   (h, m, s) = time_string.split(/:/).map { |e| e.to_i }
   begin
-    Timecode.at(h, m, s, 0, 24)
+    Timecode.at(h, m, s, 0, FPS)
   rescue
     # invalid timecode, return nil
     return nil
@@ -126,7 +125,7 @@ def output_filename(id, timecode, title_card)
     if title_card
 	return File.join(path, "#{id}_titlecard_#{t}#{suffix}")
     else
-	return File.join(path, "#{id}_#{t}_#{suffix}")
+	return File.join(path, "#{id}_#{t}#{suffix}")
     end
 end
 
@@ -135,15 +134,14 @@ def default_filename(id)
     return File.join(path, "%06d.jpg" % id.to_i)
 end
 
-def extract_thumbnail(source_file, timecode, id, title_card=false, as_default=false)
+def extract_thumbnail(source_file, timecode, offset, id, title_card=false, as_default=false)
     # convert string into timecode; return if not valid
     t = parse_timecode(timecode)
     return unless t
     raise "Source file error!" unless source_file && File.exist?(source_file)
 
-    # subtract offset and convert into something ffmpeg will understand
-    t = (t - $offset).with_frames_as_fraction
-    # save multiple thumbnails before/after timecode 
+    # add offset seconds and convert into something ffmpeg will understand
+    t = (t + offset * FPS).with_frames_as_fraction
 
     file = output_filename(id, t, title_card)
 
@@ -151,7 +149,7 @@ def extract_thumbnail(source_file, timecode, id, title_card=false, as_default=fa
       puts("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file}")
     else
       puts "Exracting thumbnail from #{source_file}..."
-      system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file} &>ffmpeg.log")
+      system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file} &> /dev/null")
     end
 
     if as_default
@@ -161,6 +159,15 @@ end
 
 def extract_thumbnails_from_csv(csv_file)
   FasterCSV.foreach(csv_file, :headers => true, :header_converters => :symbol) do |row|
+
+    # skip if the row is already marked "done"
+    next if row[:done] && row[:done].downcase=="x"
+    # skip if there are no timecodes identified
+    next if (row[:title_card_timecode].to_s.length +
+             row[:image_1_timecode].to_s.length +
+             row[:image_2_timecode].to_s.length +
+             row[:image_3_timecode].to_s.length) < 5
+
     id=row[:film_id].to_i
     unless id > 0 
       puts "id #{row[:film_id]} is not valid!"
@@ -169,14 +176,15 @@ def extract_thumbnails_from_csv(csv_file)
 
     source_file = largest_film_file(id) 
     unless source_file && File.exist?(source_file)
-      puts "could not find movie file #{source_file} for film id #{id}"
+      puts "could not find movie file #{source_file} for #{row[:published]=='TRUE' ? 'published' : 'unpublished'} film id #{id}" 
       next
     end
 
-    extract_thumbnail(source_file, row[:title_card_timecode], id, true, $titlecard_as_default)
-    extract_thumbnail(source_file, row[:image_1_timecode], id)
-    extract_thumbnail(source_file, row[:image_2_timecode], id)
-    extract_thumbnail(source_file, row[:image_3_timecode], id)
+    extract_thumbnail(source_file, row[:title_card_timecode], row[:start].to_i-$offset, id, true)
+    # use first image as default (000xxx.jpg)?
+    extract_thumbnail(source_file, row[:image_1_timecode], row[:start].to_i-$offset, id, $image_as_default)
+    extract_thumbnail(source_file, row[:image_2_timecode], row[:start].to_i-$offset, id)
+    extract_thumbnail(source_file, row[:image_3_timecode], row[:start].to_i-$offset, id)
   end
 end
 
@@ -191,7 +199,7 @@ def extract_single_timecode(id, timecode, titlecard)
     puts "could not find movie file #{source_file} for film id #{id}"
     return
   end
-  extract_thumbnail(source_file, timecode, id, titlecard, $titlecard_as_default)
+  extract_thumbnail(source_file, timecode, -$offset, id, titlecard)
 end
 
 
