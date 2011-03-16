@@ -148,14 +148,14 @@ def extract_thumbnail(source_file, timecode, offset, id, title_card=false, as_de
     if $dry_run
       puts("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file}")
     else
-      p = fork do
+#      p = fork do
             puts "Exracting thumbnail from #{source_file}..."
             system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file} &> /dev/null")
 	    if as_default
 	      File.copy(file, default_filename(id))
 	    end      
-	  end
-      Process.detach(p)
+#	  end
+#      Process.detach(p)
     end
 end
 
@@ -182,11 +182,11 @@ def extract_thumbnails_from_csv(csv_file)
       next
     end
 
-    extract_thumbnail(source_file, row[:title_card_timecode], row[:start].to_i-$offset, id, true)
+    extract_thumbnail(source_file, row[:title_card_timecode], -$offset, id, true, false)
     # use first image as default (000xxx.jpg)?
-    extract_thumbnail(source_file, row[:image_1_timecode], row[:start].to_i-$offset, id, $image_as_default)
-    extract_thumbnail(source_file, row[:image_2_timecode], row[:start].to_i-$offset, id)
-    extract_thumbnail(source_file, row[:image_3_timecode], row[:start].to_i-$offset, id)
+    extract_thumbnail(source_file, row[:image_1_timecode], -$offset, id, false, $image_as_default)
+    extract_thumbnail(source_file, row[:image_2_timecode], -$offset, id)
+    extract_thumbnail(source_file, row[:image_3_timecode], -$offset, id)
   end
 end
 
