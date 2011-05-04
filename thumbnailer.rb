@@ -129,6 +129,16 @@ def output_filename(id, timecode, title_card)
     end
 end
 
+def movies_folder_filename(id, timecode, title_card)
+    t = timecode.gsub(/:/, "_")
+    suffix = ($n_frames == 1) ? ".jpg" : "_%02d.jpg"
+    if title_card
+	return File.join("/movies", (id.to_i / 100).to_s, id.to_s, "#{id}_titlecard_#{t}#{suffix}")
+    else
+	return File.join("/movies", (id.to_i / 100).to_s, id.to_s,  "#{id}_#{t}#{suffix}")
+    end
+end
+
 def default_filename(id)
     path=output_folder(id)
     return File.join(path, "%06d.jpg" % id.to_i)
@@ -143,7 +153,20 @@ def extract_thumbnail(source_file, timecode, offset, id, title_card=false, as_de
     # add offset seconds and convert into something ffmpeg will understand
     t = (t + offset * FPS).with_frames_as_fraction
 
+    # if the file already exists in movies tree, skip re-extracting
+    # that means if you want to re-extract, delete the file!
+    file = movies_folder_filename(id, t, title_card)
+    if File.exist?(file)
+#      puts "Thumbnail #{file} already exists."
+      return
+    end
+
+    # now check that it doesn't already exist in the extraction path...
     file = output_filename(id, t, title_card)
+    if File.exist?(file)
+#      puts "Thumbnail #{file} already exists."
+      return
+    end
 
     if $dry_run
       puts("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file}")
@@ -151,9 +174,13 @@ def extract_thumbnail(source_file, timecode, offset, id, title_card=false, as_de
 #      p = fork do
             puts "Exracting thumbnail from #{source_file}..."
             system("ffmpeg -i #{source_file} -y -ss #{t} -vframes #{$n_frames} #{file} &> /dev/null")
-	    if as_default
-	      File.copy(file, default_filename(id))
-	    end      
+            if File.exist?(file)
+              if as_default
+	        File.copy(file, default_filename(id))
+              end      
+            else # file does not exist!
+              puts "Failed to extract #{file} (bad timecode)"
+            end
 #	  end
 #      Process.detach(p)
     end
