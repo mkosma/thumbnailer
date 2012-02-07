@@ -48,8 +48,9 @@ EOS
   opt :image_as_default, "Copy image jpg to 000xid.jpg for default images (csv only)", :default => true
   opt :n_frames, "Number of frames to extract at each timecode", :default => 1
   opt :offset, "Number of seconds before each timecode to begin extracting", :default => 0.0
-  opt :output_path, "Root folder for thumbnail output", :default => "./new_thumbnails"
+  opt :output_path, "Root folder for thumbnail output", :default => "new_thumbnails"
   opt :dry_run, "Dry run (don't create thumbnails)", :default => false
+  opt :fix_existing, "Fix existing thumbnails (where extracted from 0*.jpg)", :default => false
 end
 
 $csv_file = opts[:csv_file]
@@ -61,6 +62,7 @@ $film_id = opts[:film_id]
 $timecode = opts[:timecode]
 $titlecard = opts[:titlecard]
 $image_as_default = opts[:image_as_default]
+$fix_existing = opts[:fix_existing]
 
 # validate options
 if $csv_file
@@ -71,12 +73,12 @@ else
   Trollop::die "Must specify a csv file, or a film id and timecode."
 end
 
-# for a given film id, return the path to the largest associated mp4 file (presumably the highest quality file)
+# for a given film id, return the path to the largest associated mp4 file (presumably the highest quality file) - EXCEPT exclude mp4's beginning with 0
 def largest_film_file(id)
   max_file = ''
   max_size = 0
   id_dir = id / 100
-  files = Dir.glob(File.join(MOVIE_ROOT, id_dir.to_s, id.to_s, "*.mp4")) do |f|
+  files = Dir.glob(File.join(MOVIE_ROOT, id_dir.to_s, id.to_s, "[1-9]*.mp4")) do |f|
     f_size = File.size(f)
     if f_size > max_size
       max_file = f
@@ -129,13 +131,17 @@ def output_filename(id, timecode, title_card)
     end
 end
 
+def movies_folder(id)
+    return File.join("/movies", (id.to_i / 100).to_s, id.to_s)
+end
+
 def movies_folder_filename(id, timecode, title_card)
     t = timecode.gsub(/:/, "_")
     suffix = ($n_frames == 1) ? ".jpg" : "_%02d.jpg"
     if title_card
-	return File.join("/movies", (id.to_i / 100).to_s, id.to_s, "#{id}_titlecard_#{t}#{suffix}")
+	return File.join(movies_folder(id), "#{id}_titlecard_#{t}#{suffix}")
     else
-	return File.join("/movies", (id.to_i / 100).to_s, id.to_s,  "#{id}_#{t}#{suffix}")
+	return File.join(movies_folder(id),  "#{id}_#{t}#{suffix}")
     end
 end
 
@@ -158,7 +164,12 @@ def extract_thumbnail(source_file, timecode, offset, id, title_card=false, as_de
     file = movies_folder_filename(id, t, title_card)
     if File.exist?(file)
 #      puts "Thumbnail #{file} already exists."
-      return
+       # if fix_existing flag is set AND 0*.mp4 exists, allow re-extract to proceed
+       if $fix_existing && (Dir.glob(File.join(movies_folder(id), "0*.mp4")).length > 0)
+       	  puts "Re-extracting thumbnails for film id #{id}"
+       else
+          return
+       end
     end
 
     # now check that it doesn't already exist in the extraction path...
